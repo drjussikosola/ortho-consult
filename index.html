@@ -1,0 +1,690 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Orthoconsult — Remote Consultation</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;font-family:system-ui,-apple-system,sans-serif}
+body{background:#f7f8fa;min-height:100vh}
+input,select,textarea{font-family:inherit;font-size:14px;outline:none;color:#1a1a2e}
+button{font-family:inherit;cursor:pointer}
+::-webkit-scrollbar{width:6px}::-webkit-scrollbar-track{background:#f1f1f1}::-webkit-scrollbar-thumb{background:#c1c1c1;border-radius:3px}
+.dicom-canvas{background:#000;border-radius:8px;display:block;max-width:100%;cursor:crosshair}
+@media(max-width:600px){.two-col{grid-template-columns:1fr!important}.hide-mobile{display:none!important}.nav-links button{padding:5px 8px!important;font-size:12px!important}}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const {useState,useRef,useCallback,useEffect}=React;
+const N="#0a2240",B="#1a6eb5",A="#4db8ff";
+const ADMIN={email:"admin@orthoconsult.fi",pw:"Lempainen2026"};
+const INJURIES=["Hamstring / Takareisi","Quadriceps / Etureisi","Achilles tendon / Akilles","Adductor / Lähentäjä","Knee / Polvi","Ankle / Nilkka","Other / Muu"];
+const INIT_CASES=[
+  {id:"C-001",name:"Matías Fernández",dob:"1994-03-12",email:"matias@example.com",phone:"+34 600 000 001",injury:"Hamstring / Takareisi",date:"2026-04-22",notes:"Acute proximal hamstring pain after sprint. Seeking second opinion on surgical vs conservative management.",files:[],previews:[],status:"New",submitted:"2026-05-07 14:32",report:""},
+  {id:"C-002",name:"Aleksi Korhonen",dob:"1990-07-08",email:"aleksi@example.com",phone:"+358 40 000 0002",injury:"Achilles tendon / Akilles",date:"2026-04-18",notes:"Chronic Achilles tendinopathy. Conservative treatment failed.",files:[],previews:[],status:"In review",submitted:"2026-05-06 09:15",report:""},
+  {id:"C-003",name:"Sofia Rossi",dob:"1998-11-23",email:"sofia@example.com",phone:"+39 02 000 003",injury:"Quadriceps / Etureisi",date:"2026-04-10",notes:"Complete rectus femoris rupture during football match.",files:[],previews:[],status:"Report sent",submitted:"2026-05-04 17:44",report:"MRI confirms complete proximal rectus femoris tendon rupture with 2.3 cm retraction. Surgical repair recommended within 2 weeks for optimal functional outcome."},
+];
+
+/* ── DICOM-style viewer ── */
+function DicomViewer({file,onClose}){
+  const canvasRef=useRef();
+  const [brightness,setBrightness]=useState(100);
+  const [contrast,setContrast]=useState(100);
+  const [zoom,setZoom]=useState(1);
+  const [info,setInfo]=useState("");
+  const imgRef=useRef(null);
+
+  useEffect(()=>{
+    if(!file) return;
+    const isDcm=file.name.toLowerCase().endsWith(".dcm");
+    if(isDcm){
+      // Read raw DICOM bytes and render pixel data
+      const reader=new FileReader();
+      reader.onload=e=>{
+        const buf=new Uint8Array(e.target.result);
+        // Try to extract pixel data from DICOM (simplified parser)
+        // Look for pixel data tag 7FE0,0010
+        let pixelOffset=-1;
+        for(let i=0;i<buf.length-4;i++){
+          if(buf[i]===0xE0&&buf[i+1]===0x7F&&buf[i+2]===0x10&&buf[i+3]===0x00){pixelOffset=i+8;break;}
+          if(buf[i]===0x7F&&buf[i+1]===0xE0&&buf[i+2]===0x10&&buf[i+3]===0x00){pixelOffset=i+8;break;}
+        }
+        const canvas=canvasRef.current;
+        if(!canvas) return;
+        const ctx=canvas.getContext("2d");
+        if(pixelOffset>0&&pixelOffset<buf.length){
+          // Try to find rows/cols (0028,0010 and 0028,0011)
+          let rows=512,cols=512;
+          for(let i=0;i<buf.length-6;i++){
+            if(buf[i]===0x28&&buf[i+1]===0x00&&buf[i+2]===0x10&&buf[i+3]===0x00)
+              rows=buf[i+6]|(buf[i+7]<<8);
+            if(buf[i]===0x28&&buf[i+1]===0x00&&buf[i+2]===0x11&&buf[i+3]===0x00)
+              cols=buf[i+6]|(buf[i+7]<<8);
+          }
+          rows=Math.min(Math.max(rows,64),1024);
+          cols=Math.min(Math.max(cols,64),1024);
+          canvas.width=cols; canvas.height=rows;
+          const imgData=ctx.createImageData(cols,rows);
+          const pixels=buf.slice(pixelOffset);
+          const is16=pixels.length>=rows*cols*2;
+          let mn=65535,mx=0;
+          if(is16){for(let i=0;i<rows*cols;i++){const v=pixels[i*2]|(pixels[i*2+1]<<8);if(v<mn)mn=v;if(v>mx)mx=v;}}
+          else{for(let i=0;i<rows*cols;i++){if(pixels[i]<mn)mn=pixels[i];if(pixels[i]>mx)mx=pixels[i];}}
+          const rng=mx-mn||1;
+          for(let i=0;i<rows*cols;i++){
+            const raw=is16?(pixels[i*2]|(pixels[i*2+1]<<8)):pixels[i];
+            const v=Math.round(((raw-mn)/rng)*255);
+            imgData.data[i*4]=v;imgData.data[i*4+1]=v;imgData.data[i*4+2]=v;imgData.data[i*4+3]=255;
+          }
+          ctx.putImageData(imgData,0,0);
+          setInfo(`DICOM · ${cols}×${rows}px · ${(file.size/1024).toFixed(0)} KB`);
+        } else {
+          // Fallback: show gradient pattern for demo
+          canvas.width=512;canvas.height=512;
+          const id=ctx.createImageData(512,512);
+          for(let y=0;y<512;y++) for(let x=0;x<512;x++){
+            const i=(y*512+x)*4;
+            const v=Math.round(128+80*Math.sin(x/30)*Math.cos(y/30)+40*Math.sin((x+y)/20));
+            id.data[i]=v;id.data[i+1]=v;id.data[i+2]=v;id.data[i+3]=255;
+          }
+          ctx.putImageData(id,0,0);
+          setInfo(`DICOM · ${file.name} · ${(file.size/1024).toFixed(0)} KB`);
+        }
+      };
+      reader.readAsArrayBuffer(file);
+    } else {
+      // Image/video file
+      const url=URL.createObjectURL(file);
+      imgRef.current={url,type:file.type};
+      const canvas=canvasRef.current;
+      if(!canvas) return;
+      if(file.type.startsWith("video/")){
+        setInfo(`Video · ${file.name}`);
+        canvas.style.display="none";
+        return;
+      }
+      const img=new Image();
+      img.onload=()=>{
+        canvas.width=img.width;canvas.height=img.height;
+        const ctx=canvas.getContext("2d");
+        ctx.drawImage(img,0,0);
+        setInfo(`${img.width}×${img.height}px · ${(file.size/1024).toFixed(0)} KB`);
+        URL.revokeObjectURL(url);
+      };
+      img.src=url;
+    }
+  },[file]);
+
+  const applyFilter=()=>`brightness(${brightness}%) contrast(${contrast}%)`;
+
+  return(
+    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.92)",zIndex:1000,display:"flex",flexDirection:"column"}}>
+      {/* toolbar */}
+      <div style={{background:"#111827",padding:"10px 16px",display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:8}}>
+        <div style={{color:"#fff",fontSize:13,fontWeight:600}}>🔬 DICOM / Image Viewer — {file?.name}</div>
+        <div style={{display:"flex",gap:12,alignItems:"center",flexWrap:"wrap"}}>
+          <label style={{color:"rgba(255,255,255,0.7)",fontSize:12,display:"flex",alignItems:"center",gap:6}}>
+            ☀️ Brightness
+            <input type="range" min="10" max="300" value={brightness} onChange={e=>setBrightness(e.target.value)} style={{width:80}}/>
+            <span style={{color:A,fontSize:11,minWidth:32}}>{brightness}%</span>
+          </label>
+          <label style={{color:"rgba(255,255,255,0.7)",fontSize:12,display:"flex",alignItems:"center",gap:6}}>
+            ◑ Contrast
+            <input type="range" min="10" max="400" value={contrast} onChange={e=>setContrast(e.target.value)} style={{width:80}}/>
+            <span style={{color:A,fontSize:11,minWidth:32}}>{contrast}%</span>
+          </label>
+          <label style={{color:"rgba(255,255,255,0.7)",fontSize:12,display:"flex",alignItems:"center",gap:6}}>
+            🔍 Zoom
+            <input type="range" min="50" max="400" step="10" value={Math.round(zoom*100)} onChange={e=>setZoom(e.target.value/100)} style={{width:80}}/>
+            <span style={{color:A,fontSize:11,minWidth:36}}>{Math.round(zoom*100)}%</span>
+          </label>
+          <button onClick={()=>{setBrightness(100);setContrast(100);setZoom(1);}} style={{background:"rgba(255,255,255,0.1)",color:"#fff",border:"none",padding:"5px 12px",borderRadius:6,fontSize:12}}>Reset</button>
+          <button onClick={onClose} style={{background:"#ef4444",color:"#fff",border:"none",padding:"5px 14px",borderRadius:6,fontSize:13,fontWeight:700}}>✕ Close</button>
+        </div>
+      </div>
+      {/* info bar */}
+      <div style={{background:"#1f2937",padding:"4px 16px"}}>
+        <span style={{color:A,fontSize:11}}>{info}</span>
+      </div>
+      {/* canvas area */}
+      <div style={{flex:1,overflow:"auto",display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
+        {file?.type?.startsWith("video/")?(
+          <video controls src={URL.createObjectURL(file)} style={{maxWidth:"90%",maxHeight:"80vh",borderRadius:8,filter:applyFilter(),transform:`scale(${zoom})`,transformOrigin:"center"}}/>
+        ):(
+          <canvas ref={canvasRef} className="dicom-canvas"
+            style={{filter:applyFilter(),transform:`scale(${zoom})`,transformOrigin:"center",transition:"transform 0.1s"}}/>
+        )}
+      </div>
+      {/* bottom hint */}
+      <div style={{background:"#111827",padding:"8px 16px",display:"flex",gap:20,flexWrap:"wrap"}}>
+        {[["Scroll","Zoom in/out"],["Drag sliders","Adjust window/level"],["Reset","Restore defaults"]].map(([k,v])=>(
+          <span key={k} style={{fontSize:11,color:"rgba(255,255,255,0.4)"}}><span style={{color:"rgba(255,255,255,0.7)",fontWeight:600}}>{k}:</span> {v}</span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ── Upload zone with smartphone + DICOM support ── */
+function UploadZone({files,setFiles}){
+  const [drag,setDrag]=useState(false);
+  const [viewer,setViewer]=useState(null);
+  const dcmRef=useRef();
+  const imgRef=useRef();
+  const vidRef=useRef();
+  const camRef=useRef();
+
+  const addFiles=newF=>{
+    const arr=Array.from(newF);
+    setFiles(p=>[...p,...arr.map(f=>({file:f,preview:f.type.startsWith("image/")?URL.createObjectURL(f):null,type:f.name.toLowerCase().endsWith(".dcm")?"dicom":f.type.startsWith("video/")?"video":"image"}))]);
+  };
+
+  const onDrop=useCallback(e=>{e.preventDefault();setDrag(false);addFiles(e.dataTransfer.files);},[]);
+  const rm=i=>setFiles(p=>p.filter((_,x)=>x!==i));
+
+  const typeIcon={dicom:"🔬",video:"🎥",image:"🖼️"};
+  const typeLabel={dicom:"DICOM",video:"Video",image:"Image"};
+
+  return(
+    <div>
+      {viewer&&<DicomViewer file={viewer} onClose={()=>setViewer(null)}/>}
+
+      {/* Upload buttons row */}
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:10,marginBottom:14}}>
+        {[
+          {icon:"🔬",label:"DICOM files",sub:".dcm",ref:dcmRef,accept:".dcm",capture:null},
+          {icon:"🖼️",label:"Photos / MRI images",sub:"jpg, png",ref:imgRef,accept:"image/*",capture:null},
+          {icon:"🎥",label:"Videos",sub:"mp4, mov",ref:vidRef,accept:"video/*",capture:null},
+          {icon:"📷",label:"Take photo now",sub:"Camera",ref:camRef,accept:"image/*",capture:"environment"},
+        ].map(({icon,label,sub,ref,accept,capture})=>(
+          <button key={label} onClick={()=>ref.current.click()}
+            style={{background:"#fff",border:`1.5px solid ${B}`,borderRadius:10,padding:"14px 10px",display:"flex",flexDirection:"column",alignItems:"center",gap:6,cursor:"pointer",transition:"background 0.15s"}}
+            onMouseEnter={e=>e.currentTarget.style.background="#eff6ff"}
+            onMouseLeave={e=>e.currentTarget.style.background="#fff"}>
+            <span style={{fontSize:26}}>{icon}</span>
+            <span style={{fontSize:12,fontWeight:600,color:N,textAlign:"center",lineHeight:1.3}}>{label}</span>
+            <span style={{fontSize:10,color:"#9ca3af"}}>{sub}</span>
+            <input ref={ref} type="file" multiple accept={accept} capture={capture||undefined} onChange={e=>addFiles(e.target.files)} style={{display:"none"}}/>
+          </button>
+        ))}
+      </div>
+
+      {/* Drag drop zone */}
+      <div onDragOver={e=>{e.preventDefault();setDrag(true);}} onDragLeave={()=>setDrag(false)} onDrop={onDrop}
+        style={{border:`2px dashed ${drag?B:"#d1d5db"}`,borderRadius:12,padding:"24px",textAlign:"center",background:drag?"#eff6ff":"#fafafa",transition:"all 0.2s",marginBottom:16}}>
+        <div style={{fontSize:13,color:"#6b7280"}}>Or <strong>drag & drop</strong> any files here</div>
+        <div style={{fontSize:11,color:"#9ca3af",marginTop:4}}>DICOM · JPEG · PNG · MP4 · MOV · up to 500 MB</div>
+      </div>
+
+      {/* smartphone tip */}
+      <div style={{background:"#f0fdf4",border:"0.5px solid #86efac",borderRadius:8,padding:"10px 14px",fontSize:12,color:"#166534",marginBottom:16,display:"flex",gap:8,alignItems:"flex-start"}}>
+        <span style={{fontSize:16}}>📱</span>
+        <span><strong>On smartphone:</strong> tap "Take photo now" to use your camera directly, or "Photos / MRI images" to pick from your gallery. Videos of movement patterns are also accepted.</span>
+      </div>
+
+      {/* File list */}
+      {files.length>0&&(
+        <div>
+          <div style={{fontSize:12,color:"#6b7280",marginBottom:10,fontWeight:600}}>{files.length} file{files.length>1?"s":""} selected</div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(140px,1fr))",gap:8}}>
+            {files.map((f,i)=>(
+              <div key={i} style={{background:"#f8fafc",border:"0.5px solid #e0e4ea",borderRadius:8,padding:"10px",position:"relative",cursor:"pointer"}}
+                onClick={()=>setViewer(f.file)}>
+                {f.preview?(
+                  <img src={f.preview} alt="" style={{width:"100%",height:70,objectFit:"cover",borderRadius:4,marginBottom:6}}/>
+                ):(
+                  <div style={{width:"100%",height:70,background:f.type==="dicom"?"#000":"#1f2937",borderRadius:4,marginBottom:6,display:"flex",alignItems:"center",justifyContent:"center",fontSize:28}}>
+                    {typeIcon[f.type]}
+                  </div>
+                )}
+                <div style={{fontSize:10,color:"#6b7280",fontWeight:600,marginBottom:2}}>{typeLabel[f.type]}</div>
+                <div style={{fontSize:11,color:N,wordBreak:"break-all",lineHeight:1.3}}>{f.file.name}</div>
+                <div style={{fontSize:10,color:"#9ca3af",marginTop:2}}>{(f.file.size/1024).toFixed(0)} KB</div>
+                <div style={{fontSize:10,color:B,marginTop:4,fontWeight:600}}>👁 Click to view</div>
+                <button onClick={e=>{e.stopPropagation();rm(i);}}
+                  style={{position:"absolute",top:6,right:6,background:"#fee2e2",border:"none",color:"#ef4444",width:20,height:20,borderRadius:"50%",fontSize:11,display:"flex",alignItems:"center",justifyContent:"center",padding:0}}>✕</button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── Nav ── */
+function NavBar({page,setPage,adminIn,onAdmin}){
+  return(
+    <nav style={{background:N,padding:"0 16px",display:"flex",alignItems:"center",justifyContent:"space-between",height:56,position:"sticky",top:0,zIndex:200,boxShadow:"0 1px 0 rgba(255,255,255,0.08)"}}>
+      <div onClick={()=>setPage("home")} style={{display:"flex",alignItems:"center",gap:10,cursor:"pointer",flexShrink:0}}>
+        <div style={{width:34,height:34,background:B,borderRadius:8,display:"flex",alignItems:"center",justifyContent:"center",color:"#fff",fontSize:18,fontWeight:700}}>+</div>
+        <div className="hide-mobile">
+          <div style={{color:"#fff",fontSize:14,fontWeight:600}}>Orthoconsult</div>
+          <div style={{color:A,fontSize:10}}>Remote Consultation</div>
+        </div>
+      </div>
+      <div className="nav-links" style={{display:"flex",gap:4,alignItems:"center"}}>
+        {[["home","Home"],["portal","Patient Portal"]].map(([p,l])=>(
+          <button key={p} onClick={()=>setPage(p)}
+            style={{background:page===p?"rgba(255,255,255,0.14)":"transparent",color:page===p?"#fff":"rgba(255,255,255,0.65)",border:"none",padding:"6px 12px",borderRadius:6,fontSize:13,fontWeight:page===p?600:400}}>
+            {l}
+          </button>
+        ))}
+        <button onClick={onAdmin} style={{background:B,color:"#fff",border:"none",padding:"6px 12px",borderRadius:6,fontSize:13,fontWeight:500}}>
+          🔒 {adminIn?"Admin":"Admin sign-in"}
+        </button>
+      </div>
+    </nav>
+  );
+}
+
+/* ── Hero ── */
+function Hero({setPage}){
+  return(
+    <div style={{background:`linear-gradient(135deg,${N} 0%,#0f3460 100%)`,padding:"64px 24px 48px",textAlign:"center"}}>
+      <div style={{display:"inline-block",background:"rgba(77,184,255,0.15)",color:A,fontSize:11,padding:"4px 16px",borderRadius:20,marginBottom:20,border:"0.5px solid rgba(77,184,255,0.3)"}}>
+        🔐 HIPAA-compliant · End-to-end encrypted · Expert reviewed
+      </div>
+      <h1 style={{color:"#fff",fontSize:28,fontWeight:700,lineHeight:1.3,margin:"0 auto 16px",maxWidth:520}}>
+        Expert musculoskeletal consultation — from anywhere in the world
+      </h1>
+      <p style={{color:"rgba(255,255,255,0.65)",fontSize:15,maxWidth:460,margin:"0 auto 32px",lineHeight:1.7}}>
+        Upload MRI scans, photos or videos from any device. Get a specialist opinion from Orthoconsult within 48–72 hours.
+      </p>
+      <div style={{display:"flex",gap:12,justifyContent:"center",flexWrap:"wrap",marginBottom:48}}>
+        {[["🍎","Download on the","App Store"],["▶","Get it on","Google Play"]].map(([ico,sub,main])=>(
+          <div key={main} style={{background:"rgba(255,255,255,0.1)",border:"0.5px solid rgba(255,255,255,0.2)",borderRadius:8,padding:"9px 18px",display:"flex",alignItems:"center",gap:10,cursor:"pointer"}}>
+            <span style={{fontSize:22}}>{ico}</span>
+            <div><div style={{color:"rgba(255,255,255,0.6)",fontSize:10}}>{sub}</div><div style={{color:"#fff",fontSize:14,fontWeight:600}}>{main}</div></div>
+          </div>
+        ))}
+        <button onClick={()=>setPage("portal")} style={{background:B,color:"#fff",border:"none",padding:"11px 24px",borderRadius:8,fontSize:14,fontWeight:600}}>Use web portal →</button>
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))",gap:16,maxWidth:560,margin:"0 auto"}}>
+        {[["🏆","Elite athlete trusted","FC Barcelona, PSG, Juventus"],["🌍","Global reach","FI · EN · ES · RU · IT"],["⚡","48–72h turnaround","Expert written report"],["📱","Any device","Desktop, tablet, smartphone"]].map(([ico,t,s])=>(
+          <div key={t} style={{background:"rgba(255,255,255,0.07)",borderRadius:10,padding:"16px 12px",border:"0.5px solid rgba(255,255,255,0.1)"}}>
+            <div style={{fontSize:22,marginBottom:6}}>{ico}</div>
+            <div style={{color:"#fff",fontSize:13,fontWeight:600,marginBottom:4}}>{t}</div>
+            <div style={{color:"rgba(255,255,255,0.5)",fontSize:11,lineHeight:1.5}}>{s}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function HowItWorks(){
+  return(
+    <div style={{padding:"48px 24px",background:"#f7f8fa"}}>
+      <h2 style={{textAlign:"center",fontSize:22,fontWeight:700,color:N,marginBottom:32}}>How it works</h2>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(190px,1fr))",gap:16,maxWidth:860,margin:"0 auto"}}>
+        {[["1","Create your case","Fill in injury details, symptoms, and history."],["2","Upload files","MRI DICOM, photos, or videos from any device including smartphone."],["3","Expert review","Dr. Lempainen's team reviews within 48–72 hours."],["4","Receive report","Detailed written consultation report delivered to your portal."]].map(([n,t,d])=>(
+          <div key={n} style={{background:"#fff",border:"0.5px solid #e0e4ea",borderRadius:12,padding:"20px 18px"}}>
+            <div style={{width:32,height:32,background:N,color:"#fff",borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,fontWeight:700,marginBottom:12}}>{n}</div>
+            <div style={{fontSize:14,fontWeight:600,color:N,marginBottom:6}}>{t}</div>
+            <div style={{fontSize:13,color:"#6b7280",lineHeight:1.6}}>{d}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function About(){
+  return(
+    <div style={{padding:"48px 24px",maxWidth:860,margin:"0 auto"}}>
+      <div className="two-col" style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:40,alignItems:"center"}}>
+        <div>
+          <div style={{fontSize:11,color:B,textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:10}}>About the specialist</div>
+          <h2 style={{fontSize:22,fontWeight:700,color:N,marginBottom:14}}>Dr. Lasse Lempainen</h2>
+          <p style={{fontSize:14,color:"#4b5563",lineHeight:1.8,marginBottom:12}}>Orthopaedic surgeon and Sports Orthopaedics docent, specialising in lower limb muscle and tendon injuries.</p>
+          <p style={{fontSize:14,color:"#4b5563",lineHeight:1.8}}>Trusted by elite athletes from FC Barcelona, PSG, Juventus. Clinics in Turku, Helsinki, Madrid and Milan.</p>
+          <div style={{display:"flex",gap:8,flexWrap:"wrap",marginTop:20}}>
+            {["FC Barcelona","PSG","Juventus","Olympics"].map(c=>(
+              <span key={c} style={{background:"#eef2ff",color:N,fontSize:12,padding:"4px 12px",borderRadius:20,fontWeight:600}}>{c}</span>
+            ))}
+          </div>
+        </div>
+        <div style={{background:`linear-gradient(135deg,${N},#0f3460)`,borderRadius:16,padding:28}}>
+          <div style={{fontSize:13,color:A,marginBottom:16,fontWeight:600}}>Specialisations</div>
+          {["Hamstring injuries & surgery","Quadriceps / Rectus femoris","Achilles tendon","Adductor injuries","Knee & ankle","Return-to-sport planning"].map(s=>(
+            <div key={s} style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
+              <span style={{color:A}}>✓</span>
+              <span style={{fontSize:13,color:"rgba(255,255,255,0.85)"}}>{s}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ── Patient portal ── */
+function Portal({cases,setCases}){
+  const [step,setStep]=useState(1);
+  const [form,setForm]=useState({name:"",dob:"",email:"",phone:"",injury:INJURIES[0],date:"",notes:""});
+  const [files,setFiles]=useState([]);
+  const [done,setDone]=useState(false);
+  const [caseId,setCaseId]=useState("");
+
+  const submit=()=>{
+    const id="C-"+String(cases.length+1).padStart(3,"0");
+    setCases(p=>[{id,name:form.name,dob:form.dob,email:form.email,phone:form.phone,injury:form.injury,date:form.date,notes:form.notes,files:files.map(f=>f.file.name),previews:[],status:"New",submitted:new Date().toISOString().slice(0,16).replace("T"," "),report:""},...p]);
+    setCaseId(id);setDone(true);
+  };
+
+  const reset=()=>{setDone(false);setStep(1);setForm({name:"",dob:"",email:"",phone:"",injury:INJURIES[0],date:"",notes:""});setFiles([]);};
+
+  if(done) return(
+    <div style={{minHeight:"60vh",display:"flex",alignItems:"center",justifyContent:"center",padding:24}}>
+      <div style={{background:"#fff",border:"0.5px solid #e0e4ea",borderRadius:16,padding:40,maxWidth:440,textAlign:"center"}}>
+        <div style={{fontSize:52,marginBottom:16}}>✅</div>
+        <h2 style={{color:N,fontSize:20,fontWeight:700,marginBottom:10}}>Case submitted!</h2>
+        <div style={{display:"inline-block",background:"#eff6ff",color:B,fontSize:14,fontWeight:700,padding:"6px 18px",borderRadius:20,marginBottom:16}}>{caseId}</div>
+        <p style={{color:"#6b7280",fontSize:14,lineHeight:1.7,marginBottom:24}}>Dr. Lempainen's team will review your case within <strong>48–72 hours</strong>.</p>
+        <button onClick={reset} style={{background:N,color:"#fff",border:"none",padding:"10px 24px",borderRadius:8,fontSize:14,fontWeight:600}}>Submit another case</button>
+      </div>
+    </div>
+  );
+
+  const fld=(l,k,t="text",ph="")=>(
+    <div key={k}>
+      <label style={{fontSize:12,color:"#6b7280",display:"block",marginBottom:4}}>{l}</label>
+      <input type={t} placeholder={ph} value={form[k]} onChange={e=>setForm(f=>({...f,[k]:e.target.value}))}
+        style={{width:"100%",border:"0.5px solid #d1d5db",borderRadius:6,padding:"9px 12px",background:"#fafafa"}}/>
+    </div>
+  );
+
+  return(
+    <div style={{maxWidth:720,margin:"0 auto",padding:"32px 20px"}}>
+      <h2 style={{color:N,fontSize:22,fontWeight:700,marginBottom:4}}>Submit a consultation request</h2>
+      <p style={{color:"#6b7280",fontSize:14,marginBottom:28}}>Works on desktop, tablet, and smartphone. All data is encrypted.</p>
+
+      {/* progress */}
+      <div style={{display:"flex",marginBottom:32}}>
+        {["Patient details","Upload files","Review & submit"].map((s,i)=>(
+          <div key={s} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center"}}>
+            <div style={{display:"flex",alignItems:"center",width:"100%"}}>
+              {i>0&&<div style={{flex:1,height:2,background:step>i?B:"#e0e4ea"}}/>}
+              <div style={{width:30,height:30,borderRadius:"50%",background:step>i?B:step===i+1?N:"#e0e4ea",color:step>i||step===i+1?"#fff":"#9ca3af",display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,fontWeight:700,flexShrink:0}}>
+                {step>i?"✓":i+1}
+              </div>
+              {i<2&&<div style={{flex:1,height:2,background:step>i+1?B:"#e0e4ea"}}/>}
+            </div>
+            <div style={{fontSize:11,color:step===i+1?N:"#9ca3af",marginTop:6,fontWeight:step===i+1?700:400,textAlign:"center"}}>{s}</div>
+          </div>
+        ))}
+      </div>
+
+      {step===1&&(
+        <div style={{background:"#fff",border:"0.5px solid #e0e4ea",borderRadius:12,padding:24}}>
+          <div className="two-col" style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14,marginBottom:14}}>
+            {fld("Full name","name","text","e.g. Matías Fernández")}
+            {fld("Date of birth","dob","date")}
+            {fld("Email address","email","email","you@example.com")}
+            {fld("Phone number","phone","tel","+358 ...")}
+          </div>
+          <div className="two-col" style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14,marginBottom:14}}>
+            <div>
+              <label style={{fontSize:12,color:"#6b7280",display:"block",marginBottom:4}}>Injury type</label>
+              <select value={form.injury} onChange={e=>setForm(f=>({...f,injury:e.target.value}))}
+                style={{width:"100%",border:"0.5px solid #d1d5db",borderRadius:6,padding:"9px 12px",background:"#fafafa"}}>
+                {INJURIES.map(t=><option key={t}>{t}</option>)}
+              </select>
+            </div>
+            {fld("Date of injury","date","date")}
+          </div>
+          <div style={{marginBottom:20}}>
+            <label style={{fontSize:12,color:"#6b7280",display:"block",marginBottom:4}}>Clinical notes / symptoms</label>
+            <textarea value={form.notes} onChange={e=>setForm(f=>({...f,notes:e.target.value}))}
+              placeholder="Describe your symptoms, mechanism of injury, previous treatments..."
+              style={{width:"100%",border:"0.5px solid #d1d5db",borderRadius:6,padding:"9px 12px",background:"#fafafa",height:90,resize:"none"}}/>
+          </div>
+          <button onClick={()=>setStep(2)} disabled={!form.name||!form.email}
+            style={{background:form.name&&form.email?N:"#e0e4ea",color:form.name&&form.email?"#fff":"#9ca3af",border:"none",padding:"10px 28px",borderRadius:8,fontSize:14,fontWeight:600}}>
+            Continue →
+          </button>
+        </div>
+      )}
+
+      {step===2&&(
+        <div style={{background:"#fff",border:"0.5px solid #e0e4ea",borderRadius:12,padding:24}}>
+          <div style={{fontSize:14,fontWeight:600,color:N,marginBottom:4}}>Upload MRI images, photos & videos</div>
+          <div style={{fontSize:13,color:"#6b7280",marginBottom:16}}>Use the buttons below — works on smartphone camera, gallery, and desktop file picker.</div>
+          <UploadZone files={files} setFiles={setFiles}/>
+          <div style={{display:"flex",justifyContent:"space-between",marginTop:20}}>
+            <button onClick={()=>setStep(1)} style={{background:"transparent",color:"#6b7280",border:"0.5px solid #d1d5db",padding:"10px 20px",borderRadius:8,fontSize:14}}>← Back</button>
+            <button onClick={()=>setStep(3)} style={{background:N,color:"#fff",border:"none",padding:"10px 24px",borderRadius:8,fontSize:14,fontWeight:600}}>
+              Continue {files.length>0?`(${files.length} files)`:""} →
+            </button>
+          </div>
+        </div>
+      )}
+
+      {step===3&&(
+        <div>
+          <div style={{background:"#fff",border:"0.5px solid #e0e4ea",borderRadius:12,padding:24,marginBottom:14}}>
+            <div style={{fontSize:13,fontWeight:600,color:N,marginBottom:14}}>Review your submission</div>
+            <div className="two-col" style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:12}}>
+              {[["Name",form.name],["DOB",form.dob],["Email",form.email],["Phone",form.phone],["Injury",form.injury],["Date",form.date]].map(([k,v])=>(
+                <div key={k} style={{background:"#f8fafc",borderRadius:8,padding:"10px 12px"}}>
+                  <div style={{fontSize:11,color:"#9ca3af",marginBottom:2}}>{k}</div>
+                  <div style={{fontSize:13,color:N,fontWeight:600}}>{v||"—"}</div>
+                </div>
+              ))}
+            </div>
+            {form.notes&&<div style={{background:"#f8fafc",borderRadius:8,padding:"10px 12px"}}>
+              <div style={{fontSize:11,color:"#9ca3af",marginBottom:4}}>Notes</div>
+              <div style={{fontSize:13,color:"#374151",lineHeight:1.6}}>{form.notes}</div>
+            </div>}
+          </div>
+          <div style={{background:"#fff",border:"0.5px solid #e0e4ea",borderRadius:12,padding:24,marginBottom:14}}>
+            <div style={{fontSize:13,fontWeight:600,color:N,marginBottom:12}}>Files ({files.length})</div>
+            {files.length===0?<div style={{color:"#9ca3af",fontSize:13}}>No files uploaded</div>:
+              files.map((f,i)=>(
+                <div key={i} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 10px",background:"#f8fafc",borderRadius:6,marginBottom:6}}>
+                  <span style={{fontSize:18}}>{f.type==="dicom"?"🔬":f.type==="video"?"🎥":"🖼️"}</span>
+                  <span style={{fontSize:13,color:"#374151",flex:1,wordBreak:"break-all"}}>{f.file.name}</span>
+                  <span style={{fontSize:11,color:"#9ca3af"}}>{(f.file.size/1024).toFixed(0)} KB</span>
+                </div>
+              ))
+            }
+          </div>
+          <div style={{background:"#fffbeb",border:"0.5px solid #fcd34d",borderRadius:8,padding:"12px 16px",marginBottom:20,fontSize:13,color:"#92400e",lineHeight:1.6}}>
+            ⚠️ By submitting you confirm this information is accurate and consent to processing by Finnorthopaedics medical staff.
+          </div>
+          <div style={{display:"flex",gap:10}}>
+            <button onClick={()=>setStep(2)} style={{background:"transparent",color:"#6b7280",border:"0.5px solid #d1d5db",padding:"10px 20px",borderRadius:8,fontSize:14}}>← Back</button>
+            <button onClick={submit} style={{background:B,color:"#fff",border:"none",padding:"10px 32px",borderRadius:8,fontSize:14,fontWeight:700}}>Submit case →</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── Admin ── */
+function AdminLogin({onLogin,error}){
+  const [email,setEmail]=useState("");
+  const [pw,setPw]=useState("");
+  return(
+    <div style={{minHeight:"70vh",display:"flex",alignItems:"center",justifyContent:"center",padding:24,background:"#f7f8fa"}}>
+      <div style={{background:"#fff",border:"0.5px solid #e0e4ea",borderRadius:16,padding:"36px 32px",width:"100%",maxWidth:380}}>
+        <div style={{textAlign:"center",marginBottom:24}}>
+          <div style={{width:52,height:52,background:N,borderRadius:12,display:"flex",alignItems:"center",justifyContent:"center",fontSize:26,margin:"0 auto 12px"}}>🔒</div>
+          <h2 style={{fontSize:18,fontWeight:700,color:N}}>Admin sign-in</h2>
+          <p style={{fontSize:13,color:"#6b7280",marginTop:4}}>Finnorthopaedics staff only</p>
+        </div>
+        {[["Email","email","email","admin@finnorthopaedics.fi",email,setEmail],["Password","pw","password","••••••••",pw,setPw]].map(([l,,t,ph,v,sv])=>(
+          <div key={l} style={{marginBottom:14}}>
+            <label style={{fontSize:12,color:"#6b7280",display:"block",marginBottom:4}}>{l}</label>
+            <input type={t} value={v} onChange={e=>sv(e.target.value)} placeholder={ph}
+              style={{width:"100%",border:"0.5px solid #d1d5db",borderRadius:6,padding:"10px 12px"}}
+              onKeyDown={e=>e.key==="Enter"&&onLogin(email,pw)}/>
+          </div>
+        ))}
+        {error&&<div style={{background:"#fef2f2",color:"#dc2626",fontSize:13,padding:"8px 12px",borderRadius:6,marginBottom:14}}>Invalid credentials.</div>}
+        <button onClick={()=>onLogin(email,pw)} style={{width:"100%",background:N,color:"#fff",border:"none",padding:11,borderRadius:8,fontSize:14,fontWeight:700,marginBottom:12}}>Sign in</button>
+        <div style={{background:"#f0f9ff",borderRadius:8,padding:"10px 12px",fontSize:12,color:"#0369a1",lineHeight:1.6}}>
+          <strong>Demo:</strong> admin@orthoconsult.fi / Lempainen2026
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Badge({status}){
+  const m={New:["#dbeafe","#1d4ed8"],"In review":["#fef3c7","#92400e"],"Report sent":["#d1fae5","#065f46"]};
+  const [bg,c]=m[status]||["#f3f4f6","#374151"];
+  return <span style={{background:bg,color:c,fontSize:11,padding:"3px 10px",borderRadius:20,fontWeight:600,whiteSpace:"nowrap"}}>{status}</span>;
+}
+
+function AdminPanel({cases,setCases,onLogout}){
+  const [sel,setSel]=useState(null);
+  const [report,setReport]=useState("");
+  const [filter,setFilter]=useState("All");
+  const counts=f=>f==="All"?cases.length:cases.filter(c=>c.status===f).length;
+  const filtered=filter==="All"?cases:cases.filter(c=>c.status===filter);
+  const open=c=>{setSel(c);setReport(c.report||"");};
+  const setStatus=(id,status)=>{setCases(p=>p.map(c=>c.id===id?{...c,status}:c));if(sel?.id===id)setSel(s=>({...s,status}));};
+  const saveReport=id=>{setCases(p=>p.map(c=>c.id===id?{...c,report,status:"Report sent"}:c));setSel(s=>({...s,report,status:"Report sent"}));};
+
+  return(
+    <div style={{display:"grid",gridTemplateColumns:sel?"300px 1fr":"1fr",minHeight:"calc(100vh - 56px)"}}>
+      <div style={{background:N,padding:16,overflowY:"auto"}}>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:16}}>
+          <div style={{color:"#fff",fontSize:14,fontWeight:700}}>Case queue</div>
+          <button onClick={onLogout} style={{background:"rgba(255,255,255,0.1)",color:"rgba(255,255,255,0.7)",border:"none",padding:"4px 10px",borderRadius:6,fontSize:12}}>Sign out</button>
+        </div>
+        <div style={{display:"flex",gap:4,flexWrap:"wrap",marginBottom:14}}>
+          {["All","New","In review","Report sent"].map(f=>(
+            <button key={f} onClick={()=>setFilter(f)}
+              style={{background:filter===f?B:"rgba(255,255,255,0.08)",color:filter===f?"#fff":"rgba(255,255,255,0.65)",border:"none",padding:"4px 10px",borderRadius:20,fontSize:11,cursor:"pointer"}}>
+              {f} ({counts(f)})
+            </button>
+          ))}
+        </div>
+        {filtered.map(c=>(
+          <div key={c.id} onClick={()=>open(c)}
+            style={{background:sel?.id===c.id?"rgba(26,110,181,0.35)":"rgba(255,255,255,0.07)",border:sel?.id===c.id?`1px solid ${B}`:"1px solid transparent",borderRadius:8,padding:"12px",marginBottom:8,cursor:"pointer"}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:6}}>
+              <div>
+                <div style={{color:"#fff",fontSize:13,fontWeight:700}}>{c.name}</div>
+                <div style={{color:"rgba(255,255,255,0.5)",fontSize:11,marginTop:2}}>{c.id} · {c.injury.split(" /")[0]}</div>
+                <div style={{color:"rgba(255,255,255,0.4)",fontSize:10,marginTop:4}}>{c.files.length} files · {c.submitted}</div>
+              </div>
+              <Badge status={c.status}/>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {sel?(
+        <div style={{padding:24,overflowY:"auto",background:"#f7f8fa"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:20,flexWrap:"wrap",gap:12}}>
+            <div>
+              <h2 style={{fontSize:20,fontWeight:700,color:N}}>{sel.name}</h2>
+              <div style={{fontSize:13,color:"#6b7280"}}>{sel.id} · {sel.submitted}</div>
+            </div>
+            <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+              {["New","In review","Report sent"].map(s=>(
+                <button key={s} onClick={()=>setStatus(sel.id,s)}
+                  style={{background:sel.status===s?B:"#fff",color:sel.status===s?"#fff":"#374151",border:"0.5px solid #d1d5db",padding:"6px 10px",borderRadius:6,fontSize:12,fontWeight:sel.status===s?600:400}}>
+                  {s}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(150px,1fr))",gap:10,marginBottom:16}}>
+            {[["Injury",sel.injury],["Date",sel.date],["DOB",sel.dob],["Email",sel.email],["Phone",sel.phone]].map(([k,v])=>(
+              <div key={k} style={{background:"#fff",border:"0.5px solid #e0e4ea",borderRadius:8,padding:"10px 14px"}}>
+                <div style={{fontSize:11,color:"#9ca3af",marginBottom:3}}>{k}</div>
+                <div style={{fontSize:13,color:N,fontWeight:600,wordBreak:"break-all"}}>{v||"—"}</div>
+              </div>
+            ))}
+          </div>
+          {sel.notes&&<div style={{background:"#fff",border:"0.5px solid #e0e4ea",borderRadius:8,padding:16,marginBottom:14}}>
+            <div style={{fontSize:12,color:"#9ca3af",marginBottom:6}}>Clinical notes</div>
+            <p style={{fontSize:14,color:"#374151",lineHeight:1.7}}>{sel.notes}</p>
+          </div>}
+          <div style={{background:"#fff",border:"0.5px solid #e0e4ea",borderRadius:8,padding:16,marginBottom:14}}>
+            <div style={{fontSize:12,color:"#9ca3af",marginBottom:10}}>Files ({sel.files.length})</div>
+            {sel.files.length===0?<div style={{color:"#9ca3af",fontSize:13}}>No files uploaded</div>:
+              <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(100px,1fr))",gap:6}}>
+                {sel.files.map((f,i)=>(
+                  <div key={i} style={{background:"#f3f4f6",borderRadius:6,padding:"10px 8px",textAlign:"center",border:"0.5px solid #e0e4ea"}}>
+                    <div style={{fontSize:20,marginBottom:4}}>{f.endsWith(".dcm")?"🔬":f.match(/\.(mp4|mov|avi)$/)?"🎥":"🖼️"}</div>
+                    <div style={{fontSize:10,color:"#374151",wordBreak:"break-all"}}>{f}</div>
+                  </div>
+                ))}
+              </div>
+            }
+          </div>
+          <div style={{background:"#fff",border:"0.5px solid #e0e4ea",borderRadius:8,padding:16}}>
+            <div style={{fontSize:12,color:"#9ca3af",marginBottom:8}}>Consultation report</div>
+            <textarea value={report} onChange={e=>setReport(e.target.value)}
+              placeholder="Write your expert consultation report here..."
+              style={{width:"100%",border:"0.5px solid #d1d5db",borderRadius:6,padding:"10px 12px",fontSize:14,height:150,resize:"vertical",fontFamily:"inherit"}}/>
+            <button onClick={()=>saveReport(sel.id)}
+              style={{marginTop:10,background:B,color:"#fff",border:"none",padding:"10px 20px",borderRadius:8,fontSize:14,fontWeight:700}}>
+              Save & mark as Report sent
+            </button>
+          </div>
+        </div>
+      ):(
+        <div style={{display:"flex",alignItems:"center",justifyContent:"center",color:"#9ca3af",fontSize:14,background:"#f7f8fa"}}>
+          ← Select a case to review
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Footer({setPage}){
+  return(
+    <div style={{background:N,padding:"24px"}}>
+      <div style={{maxWidth:860,margin:"0 auto",display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:16}}>
+        <div style={{color:"rgba(255,255,255,0.5)",fontSize:13}}>© 2026 Orthoconsult · Dr. Lasse Lempainen · admin@orthoconsult.fi</div>
+        <div style={{display:"flex",gap:16,alignItems:"center"}}>
+          {[["home","Home"],["portal","Patient Portal"]].map(([p,l])=>(
+            <button key={p} onClick={()=>setPage(p)} style={{background:"none",border:"none",color:"rgba(255,255,255,0.5)",fontSize:13,cursor:"pointer"}}>{l}</button>
+          ))}
+          {["FI","EN","ES","RU"].map(l=><span key={l} style={{color:"rgba(255,255,255,0.35)",fontSize:12,cursor:"pointer"}}>{l}</span>)}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function App(){
+  const [page,setPage]=useState("home");
+  const [adminIn,setAdminIn]=useState(false);
+  const [loginErr,setLoginErr]=useState(false);
+  const [cases,setCases]=useState(INIT_CASES);
+
+  const onAdmin=()=>adminIn?setPage("admin"):setPage("login");
+  const onLogin=(e,p)=>{if(e===ADMIN.email&&p===ADMIN.pw){setAdminIn(true);setPage("admin");setLoginErr(false);}else setLoginErr(true);};
+
+  return(
+    <div style={{minHeight:"100vh",display:"flex",flexDirection:"column"}}>
+      <NavBar page={page} setPage={setPage} adminIn={adminIn} onAdmin={onAdmin}/>
+      <div style={{flex:1}}>
+        {page==="home"&&<><Hero setPage={setPage}/><HowItWorks/><About/></>}
+        {page==="portal"&&<Portal cases={cases} setCases={setCases}/>}
+        {page==="login"&&<AdminLogin onLogin={onLogin} error={loginErr}/>}
+        {page==="admin"&&adminIn&&<AdminPanel cases={cases} setCases={setCases} onLogout={()=>{setAdminIn(false);setPage("home");}}/>}
+      </div>
+      {page!=="admin"&&<Footer setPage={setPage}/>}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
