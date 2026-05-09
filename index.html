@@ -717,7 +717,7 @@ function AdminPanel({cases,setCases,onLogout}){
 }
 
 /* ── Hero / Home ── */
-function Hero({setPage}){
+function Hero({setPage,patient}){
   return(
     <div style={{background:`linear-gradient(135deg,${N} 0%,#0f3460 100%)`,padding:"64px 24px 48px",textAlign:"center"}}>
       <div style={{display:"inline-block",background:"rgba(77,184,255,0.15)",color:A,fontSize:11,padding:"4px 16px",borderRadius:20,marginBottom:20,border:"0.5px solid rgba(77,184,255,0.3)"}}>
@@ -732,7 +732,8 @@ function Hero({setPage}){
             <div><div style={{color:"rgba(255,255,255,0.6)",fontSize:10}}>{sub}</div><div style={{color:"#fff",fontSize:14,fontWeight:600}}>{main}</div></div>
           </div>
         ))}
-        <button onClick={()=>setPage("pauth")} style={{background:B,color:"#fff",border:"none",padding:"11px 24px",borderRadius:8,fontSize:14,fontWeight:600}}>Sign in / Register →</button>
+        <button onClick={()=>setPage("pauth")} style={{background:"rgba(255,255,255,0.15)",color:"#fff",border:"1px solid rgba(255,255,255,0.3)",padding:"11px 24px",borderRadius:8,fontSize:14,fontWeight:600}}>Sign in / Register</button>
+        <button onClick={()=>patient?setPage("pcases"):setPage("pauth")} style={{background:B,color:"#fff",border:"none",padding:"11px 24px",borderRadius:8,fontSize:14,fontWeight:600}}>Patient Portal →</button>
       </div>
       <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))",gap:16,maxWidth:560,margin:"0 auto"}}>
         {[["🏆","Elite athlete trusted","FC Barcelona, PSG, Juventus"],["🌍","Global reach","FI · EN · ES · RU · IT"],["⚡","48–72h turnaround","Expert written report"],["📱","Any device","Desktop, tablet, smartphone"]].map(([ico,t,s])=>(
@@ -827,7 +828,7 @@ function App(){
     <div style={{minHeight:"100vh",display:"flex",flexDirection:"column"}}>
       <NavBar page={page} setPage={setPage} adminIn={adminIn} onAdmin={onAdmin} patient={patient} onSignOut={onPatientSignOut}/>
       <div style={{flex:1}}>
-        {page==="home"&&<><Hero setPage={setPage}/><HowItWorks/><About/></>}
+        {page==="home"&&<><Hero setPage={setPage} patient={patient}/><HowItWorks/><About/></>}
         {page==="pauth"&&<PatientAuth patients={patients} setPatients={setPatients} onLogin={onPatientLogin}/>}
         {page==="pcases"&&patient&&<PatientDashboard patient={patient} cases={cases} setPage={setPage}/>}
         {page==="psubmit"&&patient&&<PatientSubmit patient={patient} cases={cases} setCases={setCases} setPage={setPage}/>}
